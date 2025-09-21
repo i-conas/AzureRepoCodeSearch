@@ -15,6 +15,7 @@ class Program
     private static string SearchText = string.Empty;
 
     private static readonly HttpClient httpClient = new();
+    private static readonly List<SearchResultEntry> searchResults = new();
     private static readonly JsonSerializerOptions jsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -60,6 +61,10 @@ class Program
         }
 
         Console.WriteLine("Search completed. Press any key to exit...");
+        
+        // Display summary of all search results
+        DisplaySearchResultsSummary();
+        
         Console.ReadLine();
     }
 
@@ -256,6 +261,17 @@ class Program
                             Console.WriteLine($"      - File: {result.Path}");
                             Console.WriteLine($"        Content Matches: {result.Matches?.Content?.Count ?? 0}");
 
+                            // Add to search results collection
+                            searchResults.Add(new SearchResultEntry
+                            {
+                                SearchText = SearchText,
+                                Project = project.Name,
+                                Repository = repository.Name,
+                                FileName = result.FileName,
+                                Path = result.Path,
+                                NumberOfMatches = result.Matches?.Content?.Count ?? 0
+                            });
+
                             if (result.Matches?.Content != null && result.Matches.Content.Count > 0)
                             {
                                 foreach (var match in result.Matches.Content.Take(3)) // Show first 3 matches
@@ -285,7 +301,7 @@ class Program
                     // Try to parse with JsonDocument for more flexible handling
                     try
                     {
-                        return ParseSearchResponseAlternative(jsonString, repository.Name);
+                        return ParseSearchResponseAlternative(jsonString, project, repository);
                     }
                     catch (Exception altEx)
                     {
@@ -312,29 +328,53 @@ class Program
         }
     }
 
-    private static bool ParseSearchResponseAlternative(string jsonString, string repositoryName)
+    private static bool ParseSearchResponseAlternative(string jsonString, Project project, Repository repository)
     {
         using var document = JsonDocument.Parse(jsonString);
         var root = document.RootElement;
 
         if (root.TryGetProperty("results", out var resultsElement) && resultsElement.GetArrayLength() > 0)
         {
-            Console.WriteLine($"    ✓ Repository: {repositoryName} ({resultsElement.GetArrayLength()} files with matches)");
+            Console.WriteLine($"    ✓ Repository: {repository.Name} ({resultsElement.GetArrayLength()} files with matches)");
 
             foreach (var result in resultsElement.EnumerateArray())
             {
                 var path = result.TryGetProperty("path", out var pathElement) ? pathElement.GetString() : "Unknown";
+                var fileName = result.TryGetProperty("fileName", out var fileNameElement) ? fileNameElement.GetString() : 
+                              path?.Split('/').LastOrDefault() ?? "Unknown";
+
                 Console.WriteLine($"      - File: {path}");
 
+                // Count matches in this file
+                int matchCount = 0;
                 if (result.TryGetProperty("matches", out var matchesElement))
                 {
                     if (matchesElement.TryGetProperty("content", out var contentElement) && contentElement.ValueKind == JsonValueKind.Array)
                     {
-                        var matchCount = contentElement.GetArrayLength();
-                        Console.WriteLine($"        Content Matches: {matchCount}");
+                        matchCount = contentElement.GetArrayLength();
+                    }
+                }
+
+                // Add to search results collection
+                searchResults.Add(new SearchResultEntry
+                {
+                    SearchText = SearchText,
+                    Project = project.Name,
+                    Repository = repository.Name,
+                    FileName = fileName ?? "Unknown",
+                    Path = path ?? "Unknown",
+                    NumberOfMatches = matchCount
+                });
+
+                if (result.TryGetProperty("matches", out var matchesElement2))
+                {
+                    if (matchesElement2.TryGetProperty("content", out var contentElement2) && contentElement2.ValueKind == JsonValueKind.Array)
+                    {
+                        var matchCountDisplay = contentElement2.GetArrayLength();
+                        Console.WriteLine($"        Content Matches: {matchCountDisplay}");
 
                         var displayed = 0;
-                        foreach (var match in contentElement.EnumerateArray())
+                        foreach (var match in contentElement2.EnumerateArray())
                         {
                             if (displayed >= 3) break;
 
@@ -347,9 +387,9 @@ class Program
                             displayed++;
                         }
 
-                        if (matchCount > 3)
+                        if (matchCountDisplay > 3)
                         {
-                            Console.WriteLine($"        ... and {matchCount - 3} more matches");
+                            Console.WriteLine($"        ... and {matchCountDisplay - 3} more matches");
                         }
                     }
                     else
@@ -365,7 +405,7 @@ class Program
         }
         else
         {
-            Console.WriteLine($"    No matches found in {repositoryName}");
+            Console.WriteLine($"    No matches found in {repository.Name}");
             return true;
         }
     }
@@ -386,13 +426,14 @@ class Program
             if (itemsResult?.Value == null) return;
 
             var files = itemsResult.Value.Where(item => !item.IsFolder && IsTextFile(item.Path)).ToList();
-            var matchingFiles = new List<string>();
+            var matchingFiles = new Dictionary<string, int>();
 
             foreach (var file in files)
             {
-                if (await SearchInFileAsync(project.Id, repository.Id, file.Path))
+                var matchCount = await SearchInFileAsync(project.Id, repository.Id, file.Path);
+                if (matchCount > 0)
                 {
-                    matchingFiles.Add(file.Path);
+                    matchingFiles.Add(file.Path, matchCount);
                 }
             }
 
@@ -401,7 +442,18 @@ class Program
                 Console.WriteLine($"    ✓ Repository: {repository.Name} ({matchingFiles.Count} files contain '{SearchText}')");
                 foreach (var file in matchingFiles)
                 {
-                    Console.WriteLine($"      - {file}");
+                    Console.WriteLine($"      - {file.Key} ({file.Value} matches)");
+                    
+                    // Add to search results collection
+                    searchResults.Add(new SearchResultEntry
+                    {
+                        SearchText = SearchText,
+                        Project = project.Name,
+                        Repository = repository.Name,
+                        FileName = file.Key.Split('/').LastOrDefault() ?? "Unknown",
+                        Path = file.Key,
+                        NumberOfMatches = file.Value
+                    });
                 }
             }
         }
@@ -411,21 +463,31 @@ class Program
         }
     }
 
-    private static async Task<bool> SearchInFileAsync(string projectId, string repositoryId, string filePath)
+    private static async Task<int> SearchInFileAsync(string projectId, string repositoryId, string filePath)
     {
         try
         {
             var fileUrl = $"https://dev.azure.com/{Organization}/{projectId}/_apis/git/repositories/{repositoryId}/items?path={Uri.EscapeDataString(filePath)}&api-version=7.1";
 
             var response = await httpClient.GetAsync(fileUrl);
-            if (!response.IsSuccessStatusCode) return false;
+            if (!response.IsSuccessStatusCode) return 0;
 
             var content = await response.Content.ReadAsStringAsync();
-            return content.Contains(SearchText, StringComparison.OrdinalIgnoreCase);
+            
+            // Count occurrences of the search text (case-insensitive)
+            var matchCount = 0;
+            var index = 0;
+            while ((index = content.IndexOf(SearchText, index, StringComparison.OrdinalIgnoreCase)) != -1)
+            {
+                matchCount++;
+                index += SearchText.Length;
+            }
+            
+            return matchCount;
         }
         catch
         {
-            return false;
+            return 0;
         }
     }
 
@@ -433,6 +495,48 @@ class Program
     {
         var textExtensions = new[] { ".cs", ".js", ".ts", ".html", ".css", ".json", ".xml", ".txt", ".md", ".yml", ".yaml", ".sql", ".py", ".java", ".cpp", ".h", ".c" };
         return textExtensions.Any(ext => path.EndsWith(ext, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static void DisplaySearchResultsSummary()
+    {
+        Console.WriteLine();
+        Console.WriteLine("==================================================");
+        Console.WriteLine("SEARCH RESULTS SUMMARY");
+        Console.WriteLine("==================================================");
+        
+        if (searchResults.Count == 0)
+        {
+            Console.WriteLine("No search results found.");
+            return;
+        }
+
+        Console.WriteLine($"Total files found containing '{SearchText}': {searchResults.Count}");
+        Console.WriteLine($"Total matches across all files: {searchResults.Sum(r => r.NumberOfMatches)}");
+        Console.WriteLine();
+
+        // Group by project and repository
+        var groupedResults = searchResults
+            .GroupBy(r => new { r.Project, r.Repository })
+            .OrderBy(g => g.Key.Project)
+            .ThenBy(g => g.Key.Repository);
+
+        foreach (var projectGroup in groupedResults)
+        {
+            Console.WriteLine($"Project: {projectGroup.Key.Project}");
+            Console.WriteLine($"Repository: {projectGroup.Key.Repository}");
+            Console.WriteLine($"Files found: {projectGroup.Count()}");
+            Console.WriteLine($"Total matches: {projectGroup.Sum(r => r.NumberOfMatches)}");
+            Console.WriteLine();
+
+            foreach (var result in projectGroup.OrderBy(r => r.Path))
+            {
+                Console.WriteLine($"  - {result.FileName} ({result.NumberOfMatches} matches)");
+                Console.WriteLine($"    Path: {result.Path}");
+            }
+            Console.WriteLine();
+        }
+
+        Console.WriteLine("==================================================");
     }
 }
 
@@ -567,4 +671,14 @@ public class GitItem
     public string Path { get; set; } = string.Empty;
     public bool IsFolder { get; set; }
     public string Url { get; set; } = string.Empty;
+}
+
+public class SearchResultEntry
+{
+    public string SearchText { get; set; } = string.Empty;
+    public string Project { get; set; } = string.Empty;
+    public string Repository { get; set; } = string.Empty;
+    public string FileName { get; set; } = string.Empty;
+    public string Path { get; set; } = string.Empty;
+    public int NumberOfMatches { get; set; }
 }
