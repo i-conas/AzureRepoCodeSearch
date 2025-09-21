@@ -1,0 +1,6 @@
+﻿SearchText;Project;Repository;FileName;Path;NumberOfMatches
+dlsOnlineCampusBackendService;Online-Campus;OnlineCampus.BackendServices;Scaffold.txt;/DataAccess/Scaffold.txt;11
+dlsOnlineCampusBackendService;Online-Campus;OnlineCampus.BackendServices;appsettings.Production.json;/Main/appsettings.Production.json;10
+dlsOnlineCampusBackendService;Online-Campus;OnlineCampus.BackendServices;appsettings.Development.json;/Main/appsettings.Development.json;10
+dlsOnlineCampusBackendService;Online-Campus;OnlineCampus.BackendServices;appsettings.Staging.json;/Main/appsettings.Staging.json;10
+dlsOnlineCampusBackendService;Online-Campus;OnlineCampus.BackendServices;appsettings.Development.json;/Application.Shared.IntegrationTests/appsettings.Development.json;1

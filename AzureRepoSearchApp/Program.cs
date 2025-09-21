@@ -62,6 +62,9 @@ class Program
 
         Console.WriteLine("Search completed. Press any key to exit...");
         
+        // Export search results to CSV file
+        WriteSearchResultsToCsv();
+        
         // Display summary of all search results
         DisplaySearchResultsSummary();
         
@@ -537,6 +540,57 @@ class Program
         }
 
         Console.WriteLine("==================================================");
+    }
+
+    private static void WriteSearchResultsToCsv()
+    {
+        try
+        {
+            var csvFileName = "azure-searchresults.csv";
+            var csvPath = Path.Combine(Directory.GetCurrentDirectory(), csvFileName);
+
+            using var writer = new StreamWriter(csvPath, false, Encoding.UTF8);
+            
+            // Write CSV header with property names from SearchResultEntry class
+            writer.WriteLine("SearchText;Project;Repository;FileName;Path;NumberOfMatches");
+
+            // Write data rows
+            foreach (var result in searchResults)
+            {
+                // Escape semicolons in data by wrapping fields containing semicolons in quotes
+                var searchText = EscapeCsvField(result.SearchText);
+                var project = EscapeCsvField(result.Project);
+                var repository = EscapeCsvField(result.Repository);
+                var fileName = EscapeCsvField(result.FileName);
+                var path = EscapeCsvField(result.Path);
+                var numberOfMatches = result.NumberOfMatches.ToString();
+
+                writer.WriteLine($"{searchText};{project};{repository};{fileName};{path};{numberOfMatches}");
+            }
+
+            Console.WriteLine($"Search results exported to: {csvPath}");
+            Console.WriteLine($"Total records exported: {searchResults.Count}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error writing CSV file: {ex.Message}");
+        }
+    }
+
+    private static string EscapeCsvField(string field)
+    {
+        if (string.IsNullOrEmpty(field))
+            return string.Empty;
+
+        // If field contains semicolon, comma, newline, or quote, wrap it in quotes
+        if (field.Contains(';') || field.Contains(',') || field.Contains('\n') || field.Contains('\r') || field.Contains('"'))
+        {
+            // Escape any existing quotes by doubling them
+            var escapedField = field.Replace("\"", "\"\"");
+            return $"\"{escapedField}\"";
+        }
+
+        return field;
     }
 }
 
